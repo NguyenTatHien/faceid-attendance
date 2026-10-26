@@ -1,0 +1,23 @@
+# secrets & certificates
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+SSL/
+
+# personal data (face images)
+face-stored/
+attendance-face-stored/
+uploads/
+
+# third-party models (clone separately, see README)
+face-service/silent_face_anti_spoofing/
+
+# build / deps
+node_modules/
+dist/
+venv/
+__pycache__/
+*.pyc
+*.log

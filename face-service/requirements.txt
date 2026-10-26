@@ -1,0 +1,11 @@
+flask
+flask_cors
+face_recognition
+easydict
+numpy
+tqdm
+torchvision
+torch
+opencv-python
+Pillow
+tensorboardX

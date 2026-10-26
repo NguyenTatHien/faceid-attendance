@@ -1,0 +1,584 @@
+import { IBackendRes, IAccount, IUser, IModelPaginate, IGetAccount, IPermission, IRole, IAttendanceData } from '@/types/backend';
+import axios from 'config/axios-customize';
+import axiosClient from 'config/axios-customize';
+import queryString from 'query-string';
+
+/**
+ * 
+Module Auth
+ */
+export const callRegister = (name: string, email: string, password: string, age: number, gender: string, address: string, file: File) => {
+    const formData = new FormData();
+
+    // Append all fields to FormData
+    formData.append('name', name);
+    formData.append('email', email);
+    formData.append('password', password);
+    formData.append('age', age.toString());
+    formData.append('gender', gender);
+    formData.append('address', address);
+    formData.append('image', file);
+
+    return axios.post<IBackendRes<IUser>>('/api/v1/auth/register', formData, {
+        headers: {
+            'Content-Type': 'multipart/form-data'
+        }
+    });
+}
+
+export const callLogin = (username: string, password: string) => {
+    return axios.post<IBackendRes<IAccount>>('/api/v1/auth/login1', { username, password })
+}
+
+interface ILoginResponseData {
+    message: any;
+    data: any;
+    access_token: string;
+    user: {
+        _id: string;
+        name: string;
+        email: string;
+        role: {
+            _id: string;
+            name: string;
+            permissions?: string[];
+        };
+    };
+}
+
+interface ILoginResponse {
+    statusCode: number;
+    message: string;
+    data: ILoginResponseData;
+}
+
+export const callLoginWithFaceId = async (fileDescriptor: File) => {
+    const MAX_RETRIES = 2;
+    const TIMEOUT = 30000; // 30 seconds
+    const RETRY_DELAY = 2000; // 2 seconds
+    let retryCount = 0;
+
+    const attemptLogin = async () => {
+        try {
+            // Validate input
+            if (!fileDescriptor) {
+                throw new Error('File ảnh là bắt buộc');
+            }
+
+            if (!(fileDescriptor instanceof File)) {
+                throw new Error('File không hợp lệ');
+            }
+
+            const formData = new FormData();
+            formData.append('image', fileDescriptor);
+
+            // Make API call with proper error handling
+            const response = await axios.post<ILoginResponse>(
+                '/api/v1/auth/login',
+                formData,
+                {
+                    headers: {
+                        'Content-Type': 'multipart/form-data'
+                    },
+                    timeout: TIMEOUT,
+                    validateStatus: (status) => {
+                        return status >= 200 && status < 500; // Handle only client errors
+                    }
+                }
+            );
+
+            // Check for specific error messages in response
+            if (response.message?.includes('Invalid response format') ||
+                response.message?.includes('không hợp lệ')) {
+                throw new Error('Không thể xác thực khuôn mặt. Vui lòng thử lại với ánh sáng tốt hơn.');
+            }
+
+            if (response.message?.includes('Không tìm thấy khuôn mặt phù hợp')) {
+                throw new Error('Không tìm thấy khuôn mặt phù hợp trong hệ thống. Vui lòng đăng ký trước.');
+            }
+
+            if (response.message?.includes('No face detected in the image')) {
+                throw new Error('Không phát hiện thấy khuôn mặt trong ảnh')
+            }
+
+            if (response.message?.includes('Phát hiện khuôn mặt giả')) {
+                throw new Error('Phát hiện khuôn mặt giả. Vui lòng đảm bảo khuôn mặt thật và thử lại.');
+            }
+
+            // Validate response structure
+            // if (!response.data?.data?.access_token) {
+            //     throw new Error('Không thể xác thực. Vui lòng đảm bảo khuôn mặt rõ ràng và thử lại.');
+            // }
+
+            return response.data;
+
+        } catch (error: any) {
+            // Log error details
+            console.error('Login error details:', {
+                message: error.message,
+                response: error.response?.data,
+                status: error.response?.status,
+                attempt: retryCount + 1
+            });
+
+            // Handle specific error cases
+            if (error.code === 'ECONNABORTED') {
+                if (retryCount < MAX_RETRIES) {
+                    retryCount++;
+                    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                    return attemptLogin();
+                }
+                throw new Error('Kết nối đến server quá lâu. Vui lòng thử lại sau.');
+            }
+
+            // If there's a response from server, use its message
+            if (error.response?.data?.message) {
+                throw new Error(error.response.data.message);
+            }
+
+            throw error;
+        }
+    };
+
+    return attemptLogin();
+};
+
+export const callScanFace = async (formData: FormData) => {
+    const response = await axios.post('/api/v1/face-recognition/scan', formData, {
+        headers: {
+            'Content-Type': 'multipart/form-data',
+        },
+    });
+    return response;
+};
+
+export const callDeleteUploadFile = async (fileName: string) => {
+    const response = await axios.delete('/api/v1/files/delete', { data: { fileName } });
+    return response;
+};
+
+export const callFetchAccount = () => {
+    return axios.get<IBackendRes<IGetAccount>>('/api/v1/auth/account')
+}
+
+export const callRefreshToken = () => {
+    return axios.get<IBackendRes<IAccount>>('/api/v1/auth/refresh')
+}
+
+export const callLogout = () => {
+    return axios.post<IBackendRes<string>>('/api/v1/auth/logout')
+}
+
+/**
+ * Upload single file
+ */
+export const callUploadSingleFile = (file: File, folderType: string) => {
+    const bodyFormData = new FormData();
+    bodyFormData.append('image', file);
+    return axios<IBackendRes<{ fileName: string }>>({
+        method: 'post',
+        url: '/api/v1/files/upload',
+        data: bodyFormData,
+        headers: {
+            "Content-Type": "multipart/form-data",
+            "folder_type": folderType
+        },
+    });
+}
+
+/**
+ * 
+Module User
+ */
+export const callCreateUser = (user: IUser, file: File) => {
+    const formData = new FormData();
+    formData.append("name", user.name);
+    formData.append("email", user.email);
+    formData.append("password", user.password || "");
+    formData.append("age", user.age.toString());
+    formData.append("gender", user.gender);
+    formData.append("address", user.address);
+    formData.append("role", user.role as any);
+    formData.append("department", user.department as any);
+    formData.append("employeeType", user.employeeType || "");
+    formData.append("image", file);
+
+    return axios.post<IBackendRes<IUser>>("/api/v1/users", formData, {
+        headers: {
+            "Content-Type": "multipart/form-data",
+        },
+    });
+};
+
+export const callUpdateUser = (id: string, user: any, file?: File) => {
+    const formData = new FormData();
+
+    // Thêm các trường cần cập nhật vào FormData
+    for (const key in user) {
+        if (user.hasOwnProperty(key) && user[key] !== undefined) {
+            formData.append(key, user[key] as string);
+        }
+    }
+
+    // Nếu có file, thêm file vào FormData
+    if (file) {
+        formData.append("image", file); // Gửi file ảnh với key 'image'
+    }
+
+    return axios.patch<IBackendRes<IUser>>(`/api/v1/users/${id}`, formData, {
+        headers: {
+            "Content-Type": "multipart/form-data",
+        },
+    });
+};
+
+export const callDeleteUser = (id: string) => {
+    return axios.delete<IBackendRes<IUser>>(`/api/v1/users/${id}`);
+}
+
+export const callFetchUser = (query: string) => {
+    return axios.get<IBackendRes<IModelPaginate<IUser>>>(`/api/v1/users?${query}`)
+}
+
+export const callGetMyFace = async (id: string) => {
+    const res = await axios.get(`/api/v1/users/faces/${id}`, { responseType: 'blob' })
+    return res;
+}
+
+export const callCreatePermission = (permission: IPermission) => {
+    return axios.post<IBackendRes<IPermission>>('/api/v1/permissions', permission)
+}
+
+export const callUpdatePermission = (permission: IPermission, id: string) => {
+    return axios.patch<IBackendRes<IPermission>>(`/api/v1/permissions/${id}`, permission)
+}
+
+export const callDeletePermission = (id: string) => {
+    return axios.delete<IBackendRes<IPermission>>(`/api/v1/permissions/${id}`)
+}
+
+export const callFetchPermission = (query: string) => {
+    return axios.get<IBackendRes<IModelPaginate<IPermission>>>(`/api/v1/permissions?${query}`)
+}
+
+export const callFetchPermissionById = (id: string) => {
+    return axios.get<IBackendRes<IPermission>>(`/api/v1/permissions/${id}`)
+}
+
+export const callCreateRole = (role: IRole) => {
+    return axios.post<IBackendRes<IRole>>('/api/v1/roles', role)
+}
+
+export const callUpdateRole = (role: IRole, id: string) => {
+    return axios.patch<IBackendRes<IRole>>(`/api/v1/roles/${id}`, role)
+}
+
+export const callDeleteRole = (id: string) => {
+    return axios.delete<IBackendRes<IRole>>(`/api/v1/roles/${id}`)
+}
+
+export const callFetchRole = (query: string) => {
+    return axios.get<IBackendRes<IModelPaginate<IRole>>>(`/api/v1/roles?${query}`)
+}
+
+export const callFetchRoleById = (id: string) => {
+    return axios.get<IBackendRes<IRole>>(`/api/v1/roles/${id}`)
+}
+
+export const callCreateShift = (data: any) => {
+    return axios.post<IBackendRes<any>>('/api/v1/shifts', data);
+}
+
+export const callGetShifts = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<any>>>(`/api/v1/shifts?${query}`);
+}
+
+export const callUpdateShift = (id: string, data: any) => {
+    return axios.patch<IBackendRes<any>>(`/api/v1/shifts/${id}`, data);
+}
+
+export const callDeleteShift = (id: string) => {
+    return axios.delete<IBackendRes<any>>(`/api/v1/shifts/${id}`);
+}
+
+export const callCreateUserShift = (data: any) => {
+    return axios.post<IBackendRes<any>>('/api/v1/user-shifts', data);
+}
+
+export const callGetUserShifts = (query: string) => {
+    return axios.get(`/api/v1/user-shifts?${query}`, {
+        headers: {
+            Authorization: `Bearer ${localStorage.getItem('access_token')}`
+        }
+    });
+}
+
+export const callGetMyShifts = () => {
+    return axios.get('/api/v1/user-shifts/my-shifts');
+}
+
+export const callGetUserShiftById = async (id: string) => {
+    try {
+        const res = await axios.get(`/api/v1/user-shifts/${id}`, {
+            headers: {
+                Authorization: `Bearer ${localStorage.getItem('access_token')}`
+            }
+        });
+        return res;
+    } catch (error) {
+        console.error('Error fetching user shift by id:', error);
+        throw error;
+    }
+};
+
+export const callUpdateUserShift = (id: string, data: any) => {
+    return axios.patch<IBackendRes<any>>(`/api/v1/user-shifts/${id}`, data);
+}
+
+export const callDeleteUserShift = (id: string) => {
+    return axios.delete<IBackendRes<any>>(`/api/v1/user-shifts/${id}`);
+}
+
+export const callGetUsers = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<IUser>>>(`/api/v1/users?${query}`);
+}
+
+interface IAttendanceResponse {
+    _id: string;
+    checkInTime: string;
+    checkOutTime?: string;
+    status: 'on-time' | 'late' | 'early';
+    lateMinutes?: number;
+    earlyMinutes?: number;
+    totalHours?: number;
+    overtimeHours?: number;
+    location: {
+        latitude: number;
+        longitude: number;
+    }
+    userShiftId: {
+        _id: string;
+        name: string;
+        startTime: string;
+        endTime: string;
+    };
+}
+
+export const callCheckIn = async (data: { location: { latitude: number; longitude: number } }, file: File) => {
+    const formData = new FormData();
+    formData.append('image', file);
+    formData.append('location', JSON.stringify(data.location));
+    return await axios.post<IBackendRes<IAttendanceResponse>>('/api/v1/attendance/check-in', formData, {
+        headers: {
+            'Content-Type': 'multipart/form-data',
+        },
+    });
+};
+
+export const callCheckOut = (file: File) => {
+    const formData = new FormData();
+    formData.append('image', file);
+    return axios.post('/api/v1/attendance/check-out', formData, {
+        headers: {
+            'Content-Type': 'multipart/form-data',
+        },
+    });
+};
+
+export const callGetAllAttendance = (query: { current: number; pageSize: number; startDate: string; endDate: string; search?: string }) => {
+    const qs = queryString.stringify(query);
+    return axios.get<IBackendRes<IModelPaginate<IAttendanceData>>>(`/api/v1/attendance/all-attendance?${qs}`);
+};
+
+export const callGetMyAttendance = (query: { current: number; pageSize: number; startDate: string; endDate: string; sort?: string }) => {
+    const qs = queryString.stringify(query);
+    return axios.get<IBackendRes<IAttendanceData>>(`/api/v1/attendance/my-attendance?${qs}`);
+};
+
+export const callGetTodayAttendance = () => {
+    return axios.get<IBackendRes<IAttendanceResponse>>('/api/v1/attendance/today');
+}
+
+export const callGetCheckInImage = async (id: string) => {
+    const res = await axios.get(`/api/v1/attendance/check-in-image/${id}`, { responseType: 'blob' })
+    return res;
+}
+
+export const callGetCheckOutImage = async (id: string) => {
+    const res = await axios.get(`/api/v1/attendance/check-out-image/${id}`, { responseType: 'blob' })
+    return res;
+}
+
+export const callGetProfile = () => {
+    return axios.get<IBackendRes<IUser>>('/api/v1/users/profile/me')
+}
+
+/**
+ * Module Reports
+ */
+export const callGenerateReport = (data: {
+    startDate: string;
+    endDate: string;
+    type: 'daily' | 'weekly' | 'monthly' | 'custom';
+    reportType: 'attendance' | 'leave';
+    userId?: string;
+    departmentId?: string;
+    status?: string;
+    current?: number;
+    pageSize?: number;
+}) => {
+    return axios.post('/api/v1/reports', data);
+}
+
+/**
+ * Module Payroll
+ */
+export const callGetPayroll = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<any>>>(`/api/v1/payroll?${query}`);
+}
+
+export const callGetMyPayroll = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<any>>>(`/api/v1/payroll/my-salary?${query}`);
+}
+
+export const callGeneratePayroll = (data: {
+    month: number;
+    year: number;
+    departmentId?: string;
+}) => {
+    return axios.post<IBackendRes<any>>('/api/v1/payroll/generate', data);
+}
+
+export const callGetCompanies = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<any>>>(`/api/v1/companies?${query}`);
+};
+
+export const callCreateCompany = (data: any) => {
+    return axios.post('/api/v1/companies', data);
+};
+
+export const callUpdateCompany = (id: string, data: any) => {
+    return axios.patch(`/api/v1/companies/${id}`, data);
+};
+
+export const callDeleteCompany = (id: string) => {
+    return axios.delete(`/api/v1/companies/${id}`);
+};
+
+export const callGetDepartments = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<any>>>(`/api/v1/departments?${query}`);
+};
+
+export const callCreateDepartment = (data: any) => {
+    return axios.post('/api/v1/departments', data);
+};
+
+export const callUpdateDepartment = (id: string, data: any) => {
+    return axios.patch(`/api/v1/departments/${id}`, data);
+};
+
+export const callDeleteDepartment = (id: string) => {
+    return axios.delete(`/api/v1/departments/${id}`);
+};
+
+/**
+ * Module Dashboard
+ */
+export const callGetDashboard = () => {
+    return axios.get<IBackendRes<any>>('/api/v1/dashboard');
+}
+
+/**
+ * Module Requests
+ */
+export const callGetRemoteWorkRequests = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<any>>>(`/api/v1/requests/remote-work?${query}`);
+}
+
+export const callGetMyRemoteWorkRequests = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<any>>>(`/api/v1/requests/remote-work/my-requests?${query}`);
+}
+
+export const callCreateRemoteWorkRequest = (data: any) => {
+    return axios.post('/api/v1/requests/remote-work', data);
+}
+
+export const callUpdateRemoteWorkRequest = (id: string, data: any) => {
+    return axios.patch(`/api/v1/requests/remote-work/${id}`, data);
+}
+
+export const callUpdateRemoteWorkRequestStatus = (id: string, data: any) => {
+    return axios.patch(`/api/v1/requests/remote-work/${id}/status`, data);
+}
+
+export const callDeleteRemoteWorkRequest = (id: string) => {
+    return axios.delete(`/api/v1/requests/remote-work/${id}`);
+}
+
+export const callGetLeaveRequests = (query: string) => {
+    return axios.get(`/api/v1/requests/leave?${query}`);
+}
+
+export const callGetMyLeaveRequests = (query: string = '') => {
+    return axios.get<IBackendRes<IModelPaginate<any>>>(`/api/v1/requests/leave/my-requests?${query}`);
+}
+
+export const callCreateLeaveRequest = (data: any) => {
+    return axios.post('/api/v1/requests/leave', data);
+}
+
+export const callUpdateLeaveRequest = (id: string, data: any) => {
+    return axios.patch(`/api/v1/requests/leave/${id}`, data);
+}
+
+export const callUpdateLeaveRequestStatus = (id: string, data: any) => {
+    return axios.patch(`/api/v1/requests/leave/${id}/status`, data);
+}
+
+export const callDeleteLeaveRequest = (id: string) => {
+    return axios.delete(`/api/v1/requests/leave/${id}`);
+}
+
+export const callApproveLeaveRequest = (id: string) => {
+    return axios.patch(`/api/v1/requests/leave/${id}/status`, {
+        status: 'APPROVED',
+        approvedBy: localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!)._id : ''
+    });
+}
+
+export const callRejectLeaveRequest = (id: string, data: { rejectionReason: string }) => {
+    return axios.patch(`/api/v1/requests/leave/${id}/status`, {
+        status: 'REJECTED',
+        approvedBy: localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!)._id : '',
+        rejectionReason: data.rejectionReason
+    });
+}
+
+// Salary APIs
+export const callGetSalary = (params: any) => {
+    return axios.get('/api/v1/salary', { params });
+};
+
+export const callGetMySalary = (params: any) => {
+    return axios.get('/api/v1/salary/my-salary', { params });
+};
+
+export const callCreateSalary = (data: any) => {
+    return axios.post('/api/v1/salary', data);
+};
+
+export const callCreateSalaryForAll = (month: number, year: number) => {
+    return axios.post('/api/v1/salary/all', { month, year });
+};
+
+export const callUpdateSalary = (id: string, data: any) => {
+    return axios.patch(`/api/v1/salary/${id}`, data);
+};
+
+export const callUpdateSalaryStatus = (id: string, data: any) => {
+    return axios.patch(`/api/v1/salary/${id}/status`, data);
+};
+
+export const callDeleteSalary = (id: string) => {
+    return axios.delete(`/api/v1/salary/${id}`);
+};
